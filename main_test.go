@@ -55,6 +55,33 @@ func TestShouldProcessMessengerMessageDeduplicatesMessageID(t *testing.T) {
 	}
 }
 
+func TestDuplicateDeliveryDoesNotAdvanceCustomerReplyFlow(t *testing.T) {
+	resetProcessedMessengerMessages()
+	resetMessengerReplyState()
+	t.Cleanup(resetProcessedMessengerMessages)
+	t.Cleanup(resetMessengerReplyState)
+
+	firstDelivery := map[string]interface{}{"mid": "mid.first", "text": "مرحبًا"}
+	if !shouldProcessMessengerMessage(firstDelivery) {
+		t.Fatal("expected the first delivery to be processed")
+	}
+	if reply := pageReplyFor("sender-123"); reply != initialPageReply {
+		t.Fatalf("expected the initial reply, got %q", reply)
+	}
+
+	if shouldProcessMessengerMessage(firstDelivery) {
+		t.Fatal("expected Facebook redelivery to be ignored")
+	}
+
+	secondMessage := map[string]interface{}{"mid": "mid.second", "text": "ليث، عمّان، استفسار عام"}
+	if !shouldProcessMessengerMessage(secondMessage) {
+		t.Fatal("expected a new customer message to be processed")
+	}
+	if reply := pageReplyFor("sender-123"); reply != receivedPageReply {
+		t.Fatalf("expected one follow-up reply for the new message, got %q", reply)
+	}
+}
+
 func TestShouldProcessMessengerMessageIgnoresEcho(t *testing.T) {
 	resetProcessedMessengerMessages()
 	t.Cleanup(resetProcessedMessengerMessages)
