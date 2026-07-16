@@ -37,7 +37,9 @@ func main() {
 	}
 
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery())
+	// Avoid logging request query strings because Meta sends the webhook
+	// verification token as a query parameter.
+	r.Use(gin.Recovery())
 	if err := r.SetTrustedProxies(nil); err != nil {
 		log.Fatalf("Failed to configure trusted proxies: %v", err)
 	}
