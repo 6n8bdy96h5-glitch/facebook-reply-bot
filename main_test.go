@@ -6,7 +6,45 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+func resetMessengerReplyState() {
+	messengerReplied.Lock()
+	defer messengerReplied.Unlock()
+	messengerReplied.users = make(map[string]time.Time)
+}
+
+func TestPageReplyFlow(t *testing.T) {
+	resetMessengerReplyState()
+	t.Cleanup(resetMessengerReplyState)
+
+	first := pageReplyFor("sender-123")
+	if first != initialPageReply {
+		t.Fatalf("unexpected first reply: %q", first)
+	}
+	if !strings.Contains(first, "لا ترسلوا صور الهوية") {
+		t.Fatal("first reply must warn against sharing sensitive information")
+	}
+
+	second := pageReplyFor("sender-123")
+	if second != receivedPageReply {
+		t.Fatalf("unexpected follow-up reply: %q", second)
+	}
+}
+
+func TestPageReplyFlowRestartsAfter24Hours(t *testing.T) {
+	resetMessengerReplyState()
+	t.Cleanup(resetMessengerReplyState)
+
+	messengerReplied.Lock()
+	messengerReplied.users["sender-123"] = time.Now().Add(-25 * time.Hour)
+	messengerReplied.Unlock()
+
+	if reply := pageReplyFor("sender-123"); reply != initialPageReply {
+		t.Fatalf("expected a new safe conversation after 24 hours, got %q", reply)
+	}
+}
 
 func TestLoadResendConfig(t *testing.T) {
 	t.Setenv("RESEND_API_KEY", " re_test_key ")

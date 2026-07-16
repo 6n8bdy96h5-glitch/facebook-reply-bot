@@ -20,8 +20,36 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
-	"github.com/sashabaranov/go-openai"
 )
+
+const (
+	initialPageReply = `أهلًا وسهلًا بكم في الصفحة الرسمية.
+
+نشكر تواصلكم معنا. يرجى إرسال الاسم الأول، المدينة، وموضوع الاستفسار فقط.
+
+تنبيه: لا ترسلوا صور الهوية أو بيانات الحساب البنكي أو أرقام البطاقات عبر Messenger.`
+	receivedPageReply = `تم استلام رسالتكم، وسيقوم فريق الصفحة بمراجعتها والرد عليكم في أقرب وقت ممكن.`
+)
+
+var messengerReplied = struct {
+	sync.Mutex
+	users map[string]time.Time
+}{
+	users: make(map[string]time.Time),
+}
+
+func pageReplyFor(senderID string) string {
+	messengerReplied.Lock()
+	defer messengerReplied.Unlock()
+
+	now := time.Now()
+	lastReply, exists := messengerReplied.users[senderID]
+	messengerReplied.users[senderID] = now
+	if !exists || now.Sub(lastReply) >= 24*time.Hour {
+		return initialPageReply
+	}
+	return receivedPageReply
+}
 
 var whatsappNotified = struct {
 	sync.Mutex
@@ -49,7 +77,6 @@ func main() {
 
 	verifyToken := os.Getenv("VERIFY_TOKEN")
 	pageAccessToken := os.Getenv("PAGE_ACCESS_TOKEN")
-	openaiKey := os.Getenv("OPENAI_API_KEY")
 	graphAPIVersion := envOrDefault("GRAPH_API_VERSION", "v24.0")
 	resendConfig := loadResendConfig()
 	mailConfig := loadSMTPConfig()
@@ -103,22 +130,11 @@ func main() {
 				sender, _ := mess["sender"].(map[string]interface{})
 				psid, _ := sender["id"].(string)
 				messageObj, ok := mess["message"].(map[string]interface{})
-				if !ok {
+				if !ok || psid == "" {
 					continue
 				}
 				text, _ := messageObj["text"].(string)
-				// Generate reply
-				replyText := "شكراً على رسالتك!" // default
-				if openaiKey != "" {
-					client := openai.NewClient(openaiKey)
-					resp, err := client.CreateChatCompletion(c.Request.Context(), openai.ChatCompletionRequest{
-						Model:    openai.GPT3Dot5Turbo,
-						Messages: []openai.ChatCompletionMessage{{Role: "user", Content: text}},
-					})
-					if err == nil && len(resp.Choices) > 0 {
-						replyText = resp.Choices[0].Message.Content
-					}
-				}
+				replyText := pageReplyFor(psid)
 				// Send reply via Graph API
 				if err := sendMessage(graphAPIVersion, pageAccessToken, psid, replyText); err != nil {
 					log.Printf("Failed to send Messenger reply: %v", err)
