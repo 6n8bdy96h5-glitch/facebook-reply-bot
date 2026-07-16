@@ -15,6 +15,12 @@ func resetMessengerReplyState() {
 	messengerReplied.users = make(map[string]time.Time)
 }
 
+func resetProcessedMessengerMessages() {
+	processedMessengerMessages.Lock()
+	defer processedMessengerMessages.Unlock()
+	processedMessengerMessages.messages = make(map[string]time.Time)
+}
+
 func TestPageReplyFlow(t *testing.T) {
 	resetMessengerReplyState()
 	t.Cleanup(resetMessengerReplyState)
@@ -23,13 +29,62 @@ func TestPageReplyFlow(t *testing.T) {
 	if first != initialPageReply {
 		t.Fatalf("unexpected first reply: %q", first)
 	}
-	if !strings.Contains(first, "لا ترسلوا صور الهوية") {
+	if !strings.Contains(first, "• الاسم الأول") || !strings.Contains(first, "لا ترسلوا صور الهوية") || !strings.Contains(first, "رموز التحقق") {
 		t.Fatal("first reply must warn against sharing sensitive information")
 	}
 
 	second := pageReplyFor("sender-123")
 	if second != receivedPageReply {
 		t.Fatalf("unexpected follow-up reply: %q", second)
+	}
+	if !strings.Contains(second, "لا حاجة إلى إعادة إرسالها") {
+		t.Fatal("follow-up reply must tell the customer not to resend the message")
+	}
+}
+
+func TestShouldProcessMessengerMessageDeduplicatesMessageID(t *testing.T) {
+	resetProcessedMessengerMessages()
+	t.Cleanup(resetProcessedMessengerMessages)
+
+	message := map[string]interface{}{"mid": "mid.123", "text": "مرحبًا"}
+	if !shouldProcessMessengerMessage(message) {
+		t.Fatal("expected the first delivery to be processed")
+	}
+	if shouldProcessMessengerMessage(message) {
+		t.Fatal("expected the duplicate delivery to be ignored")
+	}
+}
+
+func TestShouldProcessMessengerMessageIgnoresEcho(t *testing.T) {
+	resetProcessedMessengerMessages()
+	t.Cleanup(resetProcessedMessengerMessages)
+
+	message := map[string]interface{}{"mid": "mid.echo", "is_echo": true, "text": "رد الصفحة"}
+	if shouldProcessMessengerMessage(message) {
+		t.Fatal("expected page echo message to be ignored")
+	}
+}
+
+func TestShouldProcessMessengerMessageAcceptsMissingMessageID(t *testing.T) {
+	resetProcessedMessengerMessages()
+	t.Cleanup(resetProcessedMessengerMessages)
+
+	if !shouldProcessMessengerMessage(map[string]interface{}{"text": "مرحبًا"}) {
+		t.Fatal("expected a valid legacy event without mid to be processed")
+	}
+}
+
+func TestShouldProcessMessengerMessageAcceptsExpiredMessageID(t *testing.T) {
+	resetProcessedMessengerMessages()
+	t.Cleanup(resetProcessedMessengerMessages)
+
+	processedMessengerMessages.Lock()
+	processedMessengerMessages.messages["mid.expired"] = time.Now().Add(-messengerEventTTL - time.Minute)
+	processedMessengerMessages.Unlock()
+
+	message := map[string]interface{}{"mid": "mid.expired", "text": "رسالة جديدة"}
+	if !shouldProcessMessengerMessage(message) {
+		t.Fatal("expected an expired message ID to be processed again")
 	}
 }
 

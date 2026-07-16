@@ -25,11 +25,55 @@ import (
 const (
 	initialPageReply = `أهلًا وسهلًا بكم في الصفحة الرسمية.
 
-نشكر تواصلكم معنا. يرجى إرسال الاسم الأول، المدينة، وموضوع الاستفسار فقط.
+لمساعدتكم بشكل صحيح، يرجى إرسال المعلومات التالية فقط:
+• الاسم الأول
+• المدينة
+• موضوع الاستفسار باختصار
 
-تنبيه: لا ترسلوا صور الهوية أو بيانات الحساب البنكي أو أرقام البطاقات عبر Messenger.`
-	receivedPageReply = `تم استلام رسالتكم، وسيقوم فريق الصفحة بمراجعتها والرد عليكم في أقرب وقت ممكن.`
+حفاظًا على خصوصيتكم، لا ترسلوا صور الهوية أو بيانات الحساب البنكي أو أرقام البطاقات أو كلمات المرور أو رموز التحقق عبر Messenger.`
+	receivedPageReply = `شكرًا لكم. تم استلام رسالتكم الأخيرة وإحالتها إلى فريق الصفحة للمراجعة.
+
+لا حاجة إلى إعادة إرسالها. سيصلكم الرد من خلال هذه المحادثة في أقرب وقت ممكن.`
+	messengerEventTTL = 24 * time.Hour
 )
+
+var processedMessengerMessages = struct {
+	sync.Mutex
+	messages map[string]time.Time
+}{
+	messages: make(map[string]time.Time),
+}
+
+// shouldProcessMessengerMessage prevents replies to page-generated echo events
+// and to webhook events that Meta redelivers with the same message ID.
+func shouldProcessMessengerMessage(message map[string]interface{}) bool {
+	isEcho, _ := message["is_echo"].(bool)
+	if isEcho {
+		return false
+	}
+
+	messageID, _ := message["mid"].(string)
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		// Keep compatibility with valid webhook events that do not include a mid.
+		return true
+	}
+
+	processedMessengerMessages.Lock()
+	defer processedMessengerMessages.Unlock()
+
+	now := time.Now()
+	for id, processedAt := range processedMessengerMessages.messages {
+		if now.Sub(processedAt) >= messengerEventTTL {
+			delete(processedMessengerMessages.messages, id)
+		}
+	}
+	if processedAt, exists := processedMessengerMessages.messages[messageID]; exists && now.Sub(processedAt) < messengerEventTTL {
+		return false
+	}
+	processedMessengerMessages.messages[messageID] = now
+	return true
+}
 
 var messengerReplied = struct {
 	sync.Mutex
@@ -130,7 +174,7 @@ func main() {
 				sender, _ := mess["sender"].(map[string]interface{})
 				psid, _ := sender["id"].(string)
 				messageObj, ok := mess["message"].(map[string]interface{})
-				if !ok || psid == "" {
+				if !ok || psid == "" || !shouldProcessMessengerMessage(messageObj) {
 					continue
 				}
 				text, _ := messageObj["text"].(string)
