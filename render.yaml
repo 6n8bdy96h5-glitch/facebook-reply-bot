@@ -17,13 +17,12 @@ services:
       - key: SMTP_PORT
         value: "465"
       - key: SMTP_USERNAME
-        value: info98yy@gmail.com
+        sync: false
       - key: NOTIFY_EMAIL
-        value: info98yy@gmail.com
+        sync: false
       - key: VERIFY_TOKEN
         sync: false
       - key: PAGE_ACCESS_TOKEN
         sync: false
       - key: SMTP_PASSWORD
         sync: false
-
