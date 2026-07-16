@@ -18,6 +18,16 @@ services:
         sync: false
       - key: NOTIFY_EMAIL
         sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_TO
+        sync: false
+      - key: WHATSAPP_TEMPLATE_NAME
+        value: hello_world
+      - key: WHATSAPP_TEMPLATE_LANGUAGE
+        value: en_US
       - key: VERIFY_TOKEN
         sync: false
       - key: PAGE_ACCESS_TOKEN
