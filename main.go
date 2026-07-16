@@ -32,6 +32,7 @@ func main() {
 	graphAPIVersion := envOrDefault("GRAPH_API_VERSION", "v24.0")
 	resendConfig := loadResendConfig()
 	mailConfig := loadSMTPConfig()
+	whatsAppConfig := loadWhatsAppConfig(graphAPIVersion)
 
 	if verifyToken == "" || pageAccessToken == "" {
 		log.Fatal("VERIFY_TOKEN and PAGE_ACCESS_TOKEN must be set as environment variables")
@@ -102,17 +103,22 @@ func main() {
 					log.Printf("Failed to send Messenger reply: %v", err)
 				}
 
-				if resendConfig.enabled() || mailConfig.enabled() {
+				if resendConfig.enabled() || mailConfig.enabled() || whatsAppConfig.enabled() {
 					senderID, incomingText := psid, text
 					go func() {
-						var err error
+						var emailErr error
 						if resendConfig.enabled() {
-							err = sendResendNotification(resendConfig, senderID, incomingText)
-						} else {
-							err = sendEmailNotification(mailConfig, senderID, incomingText)
+							emailErr = sendResendNotification(resendConfig, senderID, incomingText)
+						} else if mailConfig.enabled() {
+							emailErr = sendEmailNotification(mailConfig, senderID, incomingText)
 						}
-						if err != nil {
-							log.Printf("Failed to send email notification: %v", err)
+						if emailErr != nil {
+							log.Printf("Failed to send email notification: %v", emailErr)
+						}
+						if whatsAppConfig.enabled() {
+							if err := sendWhatsAppNotification(whatsAppConfig, senderID, incomingText); err != nil {
+								log.Printf("Failed to send WhatsApp notification: %v", err)
+							}
 						}
 					}()
 				}
@@ -167,6 +173,88 @@ func sendMessage(graphAPIVersion, pageToken, recipientID, message string) error 
 }
 
 const resendAPIEndpoint = "https://api.resend.com/emails"
+
+type whatsAppConfig struct {
+	AccessToken      string
+	PhoneNumberID    string
+	To               string
+	GraphAPIVersion  string
+	TemplateName     string
+	TemplateLanguage string
+}
+
+func loadWhatsAppConfig(graphAPIVersion string) whatsAppConfig {
+	return whatsAppConfig{
+		AccessToken:      strings.TrimSpace(os.Getenv("WHATSAPP_ACCESS_TOKEN")),
+		PhoneNumberID:    strings.TrimSpace(os.Getenv("WHATSAPP_PHONE_NUMBER_ID")),
+		To:               strings.TrimPrefix(strings.ReplaceAll(strings.TrimSpace(os.Getenv("WHATSAPP_TO")), " ", ""), "+"),
+		GraphAPIVersion:  strings.TrimSpace(graphAPIVersion),
+		TemplateName:     envOrDefault("WHATSAPP_TEMPLATE_NAME", "hello_world"),
+		TemplateLanguage: envOrDefault("WHATSAPP_TEMPLATE_LANGUAGE", "en_US"),
+	}
+}
+
+func (config whatsAppConfig) enabled() bool {
+	return config.AccessToken != "" && config.PhoneNumberID != "" && config.To != "" && config.GraphAPIVersion != "" && config.TemplateName != "" && config.TemplateLanguage != ""
+}
+
+func sendWhatsAppNotification(config whatsAppConfig, senderID, incomingText string) error {
+	endpoint, err := url.JoinPath("https://graph.facebook.com", config.GraphAPIVersion, config.PhoneNumberID, "messages")
+	if err != nil {
+		return fmt.Errorf("build WhatsApp Graph API URL: %w", err)
+	}
+	return sendWhatsAppNotificationWithClient(config, senderID, incomingText, &http.Client{Timeout: 15 * time.Second}, endpoint)
+}
+
+func sendWhatsAppNotificationWithClient(config whatsAppConfig, senderID, incomingText string, client *http.Client, endpoint string) error {
+	template := map[string]interface{}{
+		"name":     config.TemplateName,
+		"language": map[string]string{"code": config.TemplateLanguage},
+	}
+	// Meta's built-in hello_world template has no variables. Custom notification
+	// templates receive sender ID, contact, city, and the Messenger message.
+	if config.TemplateName != "hello_world" {
+		template["components"] = []map[string]interface{}{
+			{
+				"type": "body",
+				"parameters": []map[string]string{
+					{"type": "text", "text": senderID},
+					{"type": "text", "text": "غير متوفر"},
+					{"type": "text", "text": "غير متوفر"},
+					{"type": "text", "text": incomingText},
+				},
+			},
+		}
+	}
+
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"to":                config.To,
+		"type":              "template",
+		"template":          template,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode WhatsApp payload: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create WhatsApp request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+config.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send WhatsApp request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("WhatsApp API returned %s: %s", resp.Status, strings.TrimSpace(string(responseBody)))
+	}
+	return nil
+}
 
 type resendConfig struct {
 	APIKey   string
