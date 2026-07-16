@@ -15,12 +15,33 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/sashabaranov/go-openai"
 )
+
+var whatsappNotified = struct {
+	sync.Mutex
+	users map[string]time.Time
+}{
+	users: make(map[string]time.Time),
+}
+
+func shouldSendInitialWhatsApp(senderID string) bool {
+	whatsappNotified.Lock()
+	defer whatsappNotified.Unlock()
+
+	now := time.Now()
+	lastSent, exists := whatsappNotified.users[senderID]
+	if exists && now.Sub(lastSent) < 24*time.Hour {
+		return false
+	}
+	whatsappNotified.users[senderID] = now
+	return true
+}
 
 func main() {
 	// Load environment variables from .env if present
@@ -115,7 +136,7 @@ func main() {
 						if emailErr != nil {
 							log.Printf("Failed to send email notification: %v", emailErr)
 						}
-						if whatsAppConfig.enabled() {
+						if whatsAppConfig.enabled() && shouldSendInitialWhatsApp(senderID) {
 							if err := sendWhatsAppNotification(whatsAppConfig, senderID, incomingText); err != nil {
 								log.Printf("Failed to send WhatsApp notification: %v", err)
 							}
