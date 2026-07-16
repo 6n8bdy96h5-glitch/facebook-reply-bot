@@ -30,6 +30,7 @@ func main() {
 	pageAccessToken := os.Getenv("PAGE_ACCESS_TOKEN")
 	openaiKey := os.Getenv("OPENAI_API_KEY")
 	graphAPIVersion := envOrDefault("GRAPH_API_VERSION", "v24.0")
+	resendConfig := loadResendConfig()
 	mailConfig := loadSMTPConfig()
 
 	if verifyToken == "" || pageAccessToken == "" {
@@ -101,10 +102,16 @@ func main() {
 					log.Printf("Failed to send Messenger reply: %v", err)
 				}
 
-				if mailConfig.enabled() {
+				if resendConfig.enabled() || mailConfig.enabled() {
 					senderID, incomingText := psid, text
 					go func() {
-						if err := sendEmailNotification(mailConfig, senderID, incomingText); err != nil {
+						var err error
+						if resendConfig.enabled() {
+							err = sendResendNotification(resendConfig, senderID, incomingText)
+						} else {
+							err = sendEmailNotification(mailConfig, senderID, incomingText)
+						}
+						if err != nil {
 							log.Printf("Failed to send email notification: %v", err)
 						}
 					}()
@@ -155,6 +162,66 @@ func sendMessage(graphAPIVersion, pageToken, recipientID, message string) error 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("Graph API returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+const resendAPIEndpoint = "https://api.resend.com/emails"
+
+type resendConfig struct {
+	APIKey   string
+	From     string
+	NotifyTo string
+}
+
+func loadResendConfig() resendConfig {
+	return resendConfig{
+		APIKey:   strings.TrimSpace(os.Getenv("RESEND_API_KEY")),
+		From:     envOrDefault("RESEND_FROM", "Messenger Bot <onboarding@resend.dev>"),
+		NotifyTo: strings.TrimSpace(os.Getenv("NOTIFY_EMAIL")),
+	}
+}
+
+func (config resendConfig) enabled() bool {
+	return config.APIKey != "" && config.From != "" && config.NotifyTo != ""
+}
+
+func sendResendNotification(config resendConfig, senderID, incomingText string) error {
+	return sendResendNotificationWithClient(config, senderID, incomingText, &http.Client{Timeout: 15 * time.Second}, resendAPIEndpoint)
+}
+
+func sendResendNotificationWithClient(config resendConfig, senderID, incomingText string, client *http.Client, endpoint string) error {
+	payload := struct {
+		From    string   `json:"from"`
+		To      []string `json:"to"`
+		Subject string   `json:"subject"`
+		Text    string   `json:"text"`
+	}{
+		From:    config.From,
+		To:      []string{config.NotifyTo},
+		Subject: "رسالة Messenger جديدة",
+		Text:    fmt.Sprintf("وصلت رسالة جديدة من المعرّف %s:\n\n%s\n", senderID, incomingText),
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode Resend payload: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create Resend request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send Resend request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("Resend API returned %s: %s", resp.Status, strings.TrimSpace(string(responseBody)))
 	}
 	return nil
 }
